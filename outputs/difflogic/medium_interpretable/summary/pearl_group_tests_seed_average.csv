@@ -1,0 +1,5 @@
+comparison,test,p_value,median_a,median_b
+N_vs_A+P-_vs_A+P+,kruskal,0.07378041599791628,,
+N_vs_A+P-,mann_whitney_u,0.8038739508962865,0.307893364,0.307318257
+N_vs_A+P+,mann_whitney_u,0.05996665966711735,0.307893364,0.430226671
+A+P-_vs_A+P+,mann_whitney_u,0.03249292187857527,0.307318257,0.430226671

@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -20,8 +21,9 @@ def scalar(value):
 
 
 def compute_welch_psd(x, sfreq):
-    nperseg = int(WELCH_SECONDS * sfreq)
-    noverlap = int(WELCH_OVERLAP_SECONDS * sfreq)
+    n_times = x.shape[-1]
+    nperseg = min(int(WELCH_SECONDS * sfreq), n_times)
+    noverlap = min(int(WELCH_OVERLAP_SECONDS * sfreq), max(0, nperseg // 2))
 
     freqs, psd = welch(
         x,
@@ -93,9 +95,17 @@ def extract_dataset_psd(dataset_name):
         save_psd_features(input_path, output_dir)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--datasets", nargs="+", default=["ALZ_FTD", "PEARL"])
+    return parser.parse_args()
+
+
 def main():
-    extract_dataset_psd("ALZ_FTD")
-    extract_dataset_psd("PEARL")
+    args = parse_args()
+
+    for dataset_name in args.datasets:
+        extract_dataset_psd(dataset_name)
 
 
 if __name__ == "__main__":

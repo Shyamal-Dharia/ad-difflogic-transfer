@@ -6,7 +6,8 @@ from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-FEATURE_DIR = ROOT_DIR / "datasets/features_psd"
+PSD_FEATURE_DIR = ROOT_DIR / "datasets/features_psd"
+HFD_FEATURE_ROOT = ROOT_DIR / "datasets/features_hfd"
 FOLD_DIR = ROOT_DIR / "datasets/folds"
 
 BANDS = {
@@ -56,6 +57,15 @@ def alz_c_vs_a_label(group):
     return None, None
 
 
+def alz_c_vs_f_label(group):
+    if group == "C":
+        return 0, "C"
+    if group == "F":
+        return 1, "F"
+
+    return None, None
+
+
 def pearl_group_label(group):
     if group == "N":
         return 0, "N"
@@ -67,11 +77,43 @@ def pearl_group_label(group):
     return None, None
 
 
+def ad_hc_group_label(group):
+    if group == "HC":
+        return 0, "HC"
+    if group == "AD":
+        return 1, "AD"
+
+    return None, None
+
+
 def normalize_excluded_channels(exclude_channels=None):
     if exclude_channels is None:
         return set()
 
     return {channel.strip() for channel in exclude_channels if channel.strip()}
+
+
+def make_subject(
+    dataset_name,
+    data,
+    x,
+    channel_names,
+    label,
+    selected_group,
+    participant_id,
+):
+    return {
+        "participant_id": participant_id,
+        "dataset": dataset_name,
+        "x": x,
+        "label": label,
+        "group": selected_group,
+        "age": int(scalar(data["age"])),
+        "channel_names": channel_names,
+        "n_epochs": x.shape[0],
+        "n_channels": x.shape[1],
+        "n_bands": x.shape[2],
+    }
 
 
 def load_subject_feature(dataset_name, feature_path, label_function, exclude_channels=None):
@@ -90,24 +132,21 @@ def load_subject_feature(dataset_name, feature_path, label_function, exclude_cha
     channel_names = channel_names[keep_channels]
     participant_id = str(scalar(data["participant_id"]))
 
-    return {
-        "participant_id": participant_id,
-        "dataset": dataset_name,
-        "x": x,
-        "label": label,
-        "group": selected_group,
-        "age": int(scalar(data["age"])),
-        "channel_names": channel_names,
-        "n_epochs": x.shape[0],
-        "n_channels": x.shape[1],
-        "n_bands": x.shape[2],
-    }
+    return make_subject(
+        dataset_name,
+        data,
+        x,
+        channel_names,
+        label,
+        selected_group,
+        participant_id,
+    )
 
 
 def load_bandpower_dataset(dataset_name, label_function, exclude_channels=None):
     subjects = []
 
-    for feature_path in sorted((FEATURE_DIR / dataset_name).glob("*.npz")):
+    for feature_path in sorted((PSD_FEATURE_DIR / dataset_name).glob("*.npz")):
         subject = load_subject_feature(
             dataset_name,
             feature_path,
@@ -145,12 +184,192 @@ def load_alz_c_vs_a_bandpower_dataset(exclude_channels=None):
     )
 
 
-def load_pearl_bandpower_dataset(exclude_channels=None):
+def load_alz_c_vs_f_bandpower_dataset(exclude_channels=None):
     return load_bandpower_dataset(
-        "PEARL",
+        "ALZ_FTD",
+        alz_c_vs_f_label,
+        exclude_channels=exclude_channels,
+    )
+
+
+def load_ad_hc_bandpower_dataset(dataset_name, exclude_channels=None):
+    return load_bandpower_dataset(
+        dataset_name,
+        ad_hc_group_label,
+        exclude_channels=exclude_channels,
+    )
+
+
+def load_pearl_bandpower_dataset(dataset_name="PEARL", exclude_channels=None):
+    return load_bandpower_dataset(
+        dataset_name,
         pearl_group_label,
         exclude_channels=exclude_channels,
     )
+
+
+def load_subject_hfd_feature(dataset_name, feature_path, label_function, exclude_channels=None):
+    data = np.load(feature_path, allow_pickle=True)
+    group = str(scalar(data["group"]))
+    label, selected_group = label_function(group)
+
+    if label is None:
+        return None
+
+    channel_names = data["channel_names"].astype(str)
+    excluded_channels = normalize_excluded_channels(exclude_channels)
+    keep_channels = np.array([channel not in excluded_channels for channel in channel_names])
+    x = data["x"][:, keep_channels, :].astype(np.float32)
+    channel_names = channel_names[keep_channels]
+    participant_id = str(scalar(data["participant_id"]))
+
+    return make_subject(
+        dataset_name,
+        data,
+        x,
+        channel_names,
+        label,
+        selected_group,
+        participant_id,
+    )
+
+
+def load_hfd_dataset(dataset_name, label_function, hfd_name="kmax_16", exclude_channels=None):
+    subjects = []
+    feature_dir = HFD_FEATURE_ROOT / hfd_name / dataset_name
+
+    for feature_path in sorted(feature_dir.glob("*.npz")):
+        subject = load_subject_hfd_feature(
+            dataset_name,
+            feature_path,
+            label_function,
+            exclude_channels=exclude_channels,
+        )
+
+        if subject is not None:
+            subjects.append(subject)
+
+    subject_table = pd.DataFrame(
+        [
+            {
+                "participant_id": subject["participant_id"],
+                "dataset": subject["dataset"],
+                "label": subject["label"],
+                "group": subject["group"],
+                "age": subject["age"],
+                "n_epochs": subject["n_epochs"],
+                "n_channels": subject["n_channels"],
+                "n_bands": subject["n_bands"],
+            }
+            for subject in subjects
+        ]
+    )
+
+    return subjects, subject_table
+
+
+def load_alz_c_vs_a_hfd_dataset(hfd_name="kmax_16", exclude_channels=None):
+    return load_hfd_dataset(
+        "ALZ_FTD",
+        alz_c_vs_a_label,
+        hfd_name=hfd_name,
+        exclude_channels=exclude_channels,
+    )
+
+
+def load_alz_c_vs_f_hfd_dataset(hfd_name="kmax_16", exclude_channels=None):
+    return load_hfd_dataset(
+        "ALZ_FTD",
+        alz_c_vs_f_label,
+        hfd_name=hfd_name,
+        exclude_channels=exclude_channels,
+    )
+
+
+def load_pearl_hfd_dataset(dataset_name="PEARL", hfd_name="kmax_16", exclude_channels=None):
+    return load_hfd_dataset(
+        dataset_name,
+        pearl_group_label,
+        hfd_name=hfd_name,
+        exclude_channels=exclude_channels,
+    )
+
+
+def load_alz_c_vs_a_dataset(feature_kind="psd", hfd_name="kmax_16", exclude_channels=None):
+    if feature_kind == "hfd":
+        return load_alz_c_vs_a_hfd_dataset(
+            hfd_name=hfd_name,
+            exclude_channels=exclude_channels,
+        )
+
+    return load_alz_c_vs_a_bandpower_dataset(exclude_channels=exclude_channels)
+
+
+def load_alz_c_vs_f_dataset(feature_kind="psd", hfd_name="kmax_16", exclude_channels=None):
+    if feature_kind == "hfd":
+        return load_alz_c_vs_f_hfd_dataset(
+            hfd_name=hfd_name,
+            exclude_channels=exclude_channels,
+        )
+
+    return load_alz_c_vs_f_bandpower_dataset(exclude_channels=exclude_channels)
+
+
+def load_alz_dataset(
+    clinical_task="cn_vs_ad",
+    feature_kind="psd",
+    hfd_name="kmax_16",
+    exclude_channels=None,
+):
+    if clinical_task == "cn_vs_ftd":
+        return load_alz_c_vs_f_dataset(
+            feature_kind=feature_kind,
+            hfd_name=hfd_name,
+            exclude_channels=exclude_channels,
+        )
+
+    return load_alz_c_vs_a_dataset(
+        feature_kind=feature_kind,
+        hfd_name=hfd_name,
+        exclude_channels=exclude_channels,
+    )
+
+
+def load_source_dataset(
+    dataset_name="ALZ_FTD",
+    clinical_task="cn_vs_ad",
+    feature_kind="psd",
+    hfd_name="kmax_16",
+    exclude_channels=None,
+):
+    if dataset_name == "ALZ_FTD":
+        return load_alz_dataset(
+            clinical_task=clinical_task,
+            feature_kind=feature_kind,
+            hfd_name=hfd_name,
+            exclude_channels=exclude_channels,
+        )
+
+    if feature_kind != "psd":
+        raise ValueError("Only PSD features are supported for generic AD/HC source datasets.")
+
+    return load_ad_hc_bandpower_dataset(dataset_name, exclude_channels=exclude_channels)
+
+
+def load_pearl_dataset(
+    dataset_name="PEARL",
+    feature_kind="psd",
+    hfd_name="kmax_16",
+    exclude_channels=None,
+):
+    if feature_kind == "hfd":
+        return load_pearl_hfd_dataset(
+            dataset_name=dataset_name,
+            hfd_name=hfd_name,
+            exclude_channels=exclude_channels,
+        )
+
+    return load_pearl_bandpower_dataset(dataset_name=dataset_name, exclude_channels=exclude_channels)
 
 
 def stack_subjects(subjects, subject_ids):
@@ -229,6 +448,19 @@ def encode_fold_for_difflogic(x_train, x_val, x_test, x_pearl=None, n_bins=THERM
         x_pearl_encoded = apply_thermometer_encoder(x_pearl, encoder)
 
     return encoder, x_train_encoded, x_val_encoded, x_test_encoded, x_pearl_encoded
+
+
+def scale_fold_features(x_train, x_val, x_test, x_pearl=None):
+    scaler = fit_minmax_scaler(x_train)
+    x_train_scaled = apply_minmax_scaler(x_train, scaler)
+    x_val_scaled = apply_minmax_scaler(x_val, scaler)
+    x_test_scaled = apply_minmax_scaler(x_test, scaler)
+    x_pearl_scaled = None
+
+    if x_pearl is not None:
+        x_pearl_scaled = apply_minmax_scaler(x_pearl, scaler)
+
+    return scaler, x_train_scaled, x_val_scaled, x_test_scaled, x_pearl_scaled
 
 
 def make_subject_stratified_folds(subject_table, n_splits=10, val_size=0.20, random_state=42):

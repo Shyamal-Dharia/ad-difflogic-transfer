@@ -12,8 +12,10 @@ The pipeline includes:
 
 - common EEG preprocessing for ALZ_FTD and PEARL;
 - Welch power spectral density (PSD) feature extraction;
-- relative bandpower conversion and thermometer encoding;
+- Higuchi fractal dimension (HFD) feature extraction;
+- relative bandpower conversion and fold-specific feature scaling;
 - subject-stratified DiffLogic training on AD versus control;
+- matched PyTorch baseline training with MLP, 1-Conv, and Transformer models;
 - direct transfer inference on PEARL;
 - PEARL group-level summaries and covariate checks;
 - model interpretation with Grad x Input and Integrated Gradients.
@@ -24,9 +26,11 @@ The pipeline includes:
 src/
   preprocessing.py                 # EEG preprocessing
   feature_extraction_psd.py         # Welch PSD extraction
+  feature_extraction_hfd.py         # Higuchi fractal dimension extraction
   statistical_analysis_psd.py       # subject-level PSD statistics
   train_helpers.py                  # feature loading, folds, encoding
   difflogic_model.py                # DiffLogic model definitions
+  baseline_models.py                # MLP, 1-Conv, and Transformer baselines
   train_difflogic.py                # model training and PEARL transfer inference
   summarize_difflogic_runs.py       # multi-seed summary tables
   analyze_pearl_covariates.py       # age/sex adjusted PEARL analysis
@@ -121,7 +125,24 @@ This creates:
 datasets/statistics_psd/
 ```
 
-### 4. Train DiffLogic Models
+### 4. Extract HFD Features
+
+HFD uses `k_max` as a feature-extraction hyperparameter. The default below uses `k_max=16`.
+
+```bash
+PYTHONPATH=src python src/feature_extraction_hfd.py \
+  --k-max 16 \
+  --num-k 16
+```
+
+This creates:
+
+```text
+datasets/features_hfd/kmax_16/ALZ_FTD/
+datasets/features_hfd/kmax_16/PEARL/
+```
+
+### 5. Train DiffLogic Models
 
 Example medium-size model with 5 independent seeds:
 
@@ -142,7 +163,24 @@ This creates:
 outputs/difflogic/medium_interpretable/
 ```
 
-### 5. Summarize Multi-Seed Results
+The same training script can run matched PyTorch baselines. These use the same folds, batch size, class-weighted loss, early stopping, subject-level evaluation, and PEARL transfer inference. Baselines default to dropout `0.2`, learning rate `0.001`, and approximately `250k` trainable parameters.
+
+```bash
+for model_kind in mlp_250k conv1d_250k transformer_250k; do
+  for seed in 1 2 3 4 5; do
+    PYTHONPATH=src python src/train_difflogic.py \
+      --model-kind $model_kind \
+      --output-name ${model_kind}_psd \
+      --seed $seed \
+      --epochs 200 \
+      --patience 50
+  done
+done
+```
+
+DiffLogic keeps thermometer encoding because logic layers require binary inputs. The PyTorch baselines use the same train-fold min-max scaling before training and transfer inference.
+
+### 6. Summarize Multi-Seed Results
 
 ```bash
 PYTHONPATH=src python src/summarize_difflogic_runs.py \
@@ -155,14 +193,14 @@ This creates:
 outputs/difflogic/medium_interpretable/summary/
 ```
 
-### 6. Run Age/Sex Adjustment
+### 7. Run Age/Sex Adjustment
 
 ```bash
 PYTHONPATH=src python src/analyze_pearl_covariates.py \
   --summary-dir outputs/difflogic/medium_interpretable/summary
 ```
 
-### 7. Interpret the Trained Model
+### 8. Interpret the Trained Model
 
 Grad x Input:
 
@@ -208,4 +246,3 @@ outputs/difflogic/<run_name>/interpretation/soft_integrated_gradients/
 ## Notes
 
 The analysis is designed around subject-level evaluation to avoid epoch-level leakage. PEARL transfer scores are interpreted as AD-like EEG scores for genetic-risk stratification, not as diagnostic labels.
-

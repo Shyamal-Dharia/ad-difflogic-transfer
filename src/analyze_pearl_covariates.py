@@ -59,6 +59,10 @@ def fit_adjusted_models(data):
     return model_n_reference, model_apm_reference
 
 
+def scipy_pvalue(test_result):
+    return test_result.pvalue if hasattr(test_result, "pvalue") else test_result[1]
+
+
 def model_to_table(name, model):
     conf = model.conf_int()
     rows = []
@@ -103,10 +107,10 @@ def main():
 
     print("Age by group")
     print(age_summary)
-    print("\nAge Kruskal p =", age_test.pvalue)
+    print("\nAge Kruskal p =", scipy_pvalue(age_test))
     print("\nSex counts")
     print(sex_table)
-    print("Sex chi-square p =", sex_test.pvalue)
+    print("Sex chi-square p =", scipy_pvalue(sex_test))
     print("\nAge/sex adjusted OLS")
     print(model_table)
 

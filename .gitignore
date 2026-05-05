@@ -1,0 +1,26 @@
+# Large local data and generated outputs
+datasets/
+outputs/
+logs/
+
+# Python cache and local notebook state
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Environments and local configuration
+.env
+.venv/
+venv/
+
+# Model checkpoints and generated arrays
+*.pt
+*.pth
+*.npy
+*.npz
+*.so
+
+
+/notes
+/backup
+/AGENTS.md

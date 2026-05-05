@@ -9,18 +9,26 @@ import torch
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, roc_auc_score
 from torch.utils.data import DataLoader, TensorDataset
 
-from difflogic_model import get_logic_connections, make_difflogic_model
+from baseline_models import count_trainable_parameters, make_baseline_model
 from train_helpers import (
     ROOT_DIR,
     encode_fold_for_difflogic,
-    load_alz_c_vs_a_bandpower_dataset,
-    load_pearl_bandpower_dataset,
+    load_pearl_dataset,
+    load_source_dataset,
     make_subject_stratified_folds,
+    scale_fold_features,
     stack_subjects,
 )
 
+try:
+    from difflogic_model import get_logic_connections, make_difflogic_model
+except ModuleNotFoundError:
+    get_logic_connections = None
+    make_difflogic_model = None
+
 
 OUTPUT_DIR = ROOT_DIR / "outputs/difflogic"
+BASELINE_MODEL_KINDS = ["mlp_250k", "conv1d_250k", "transformer_250k"]
 
 
 def set_seed(seed):
@@ -47,6 +55,9 @@ def parse_exclude_channels(exclude_channels):
 def get_run_name(args):
     if args.output_name is not None:
         return args.output_name
+
+    if args.model_kind != "difflogic":
+        return args.model_kind
 
     return args.model_size
 
@@ -209,6 +220,121 @@ def save_encoder(encoder, output_path):
     )
 
 
+def save_scaler(scaler, output_path):
+    np.savez_compressed(
+        output_path,
+        feature_min=scaler["feature_min"],
+        feature_max=scaler["feature_max"],
+    )
+
+
+def prepare_fold_inputs(args, fold_dir, x_train, x_val, x_test, x_pearl):
+    if args.model_kind == "difflogic":
+        encoder, x_train, x_val, x_test, x_pearl = encode_fold_for_difflogic(
+            x_train,
+            x_val,
+            x_test,
+            x_pearl,
+            n_bins=args.thermometer_bins,
+        )
+        save_encoder(encoder, fold_dir / "thermometer_encoder.npz")
+        return x_train, x_val, x_test, x_pearl, "thermometer"
+
+    scaler, x_train, x_val, x_test, x_pearl = scale_fold_features(
+        x_train,
+        x_val,
+        x_test,
+        x_pearl,
+    )
+    save_scaler(scaler, fold_dir / "minmax_scaler.npz")
+    return x_train, x_val, x_test, x_pearl, "minmax"
+
+
+def make_model(args, input_shape):
+    if args.model_kind == "difflogic":
+        if make_difflogic_model is None:
+            raise ImportError(
+                "DiffLogic training requires the difflogic package. "
+                "Install requirements.txt or use --model-kind with a PyTorch baseline."
+            )
+
+        return make_difflogic_model(
+            args.model_size,
+            tau=args.tau,
+            device=args.device,
+            input_dim=int(np.prod(input_shape)),
+        )
+
+    return make_baseline_model(
+        args.model_kind,
+        input_shape=input_shape,
+        dropout=args.dropout,
+        target_parameters=args.target_parameters,
+    )
+
+
+def checkpoint_metadata(args, model, input_shape, preprocessing_name):
+    metadata = {
+        "model_state_dict": model.state_dict(),
+        "model_kind": args.model_kind,
+        "model_size": args.model_size,
+        "run_name": get_run_name(args),
+        "input_shape": tuple(int(value) for value in input_shape),
+        "input_dim": int(np.prod(input_shape)),
+        "parameter_count": count_trainable_parameters(model),
+        "exclude_channels": args.exclude_channels,
+        "feature_kind": args.feature_kind,
+        "clinical_task": args.clinical_task,
+        "source_dataset": args.source_dataset,
+        "target_dataset": args.target_dataset,
+        "shuffle_alz_labels": args.shuffle_alz_labels,
+        "preprocessing": preprocessing_name,
+        "dropout": args.dropout,
+        "target_parameters": args.target_parameters,
+    }
+
+    if args.feature_kind == "hfd":
+        metadata["hfd_name"] = args.hfd_name
+
+    if args.model_kind == "difflogic":
+        metadata["logic_connections"] = get_logic_connections(model)
+        metadata["thermometer_bins"] = args.thermometer_bins
+
+    return metadata
+
+
+def make_run_config(args, exclude_channels):
+    run_config = {
+        "model_kind": args.model_kind,
+        "model_size": args.model_size,
+        "output_name": get_run_name(args),
+        "seed": args.seed,
+        "exclude_channels": exclude_channels,
+        "feature_kind": args.feature_kind,
+        "clinical_task": args.clinical_task,
+        "source_dataset": args.source_dataset,
+        "target_dataset": args.target_dataset,
+        "shuffle_alz_labels": args.shuffle_alz_labels,
+        "epochs": args.epochs,
+        "patience": args.patience,
+        "batch_size": args.batch_size,
+        "lr": args.lr,
+    }
+
+    if args.feature_kind == "hfd":
+        run_config["hfd_name"] = args.hfd_name
+
+    if args.model_kind == "difflogic":
+        run_config["preprocessing"] = "thermometer"
+        run_config["thermometer_bins"] = args.thermometer_bins
+    else:
+        run_config["preprocessing"] = "minmax"
+        run_config["dropout"] = args.dropout
+        run_config["target_parameters"] = args.target_parameters
+
+    return run_config
+
+
 def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table, folds):
     run_dir = OUTPUT_DIR / get_run_name(args) / "seed_{:03d}".format(args.seed)
     fold_dir = run_dir / "fold_{:02d}".format(fold["fold"])
@@ -222,26 +348,23 @@ def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table,
         pearl_table["participant_id"].to_numpy(),
     )
 
-    encoder, x_train, x_val, x_test, x_pearl = encode_fold_for_difflogic(
+    x_train, x_val, x_test, x_pearl, preprocessing_name = prepare_fold_inputs(
+        args,
+        fold_dir,
         x_train,
         x_val,
         x_test,
         x_pearl,
-        n_bins=args.thermometer_bins,
     )
-    save_encoder(encoder, fold_dir / "thermometer_encoder.npz")
 
     train_loader = make_loader(x_train, y_train, args.batch_size, shuffle=True)
     val_loader = make_loader(x_val, y_val, args.batch_size, shuffle=False)
 
-    input_dim = x_train.shape[1]
-    model = make_difflogic_model(
-        args.model_size,
-        tau=args.tau,
-        device=args.device,
-        input_dim=input_dim,
-    )
+    input_shape = x_train.shape[1:]
+    input_dim = int(np.prod(input_shape))
+    model = make_model(args, input_shape)
     model.to(args.device)
+    parameter_count = count_trainable_parameters(model)
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights(y_train, args.device))
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -284,21 +407,10 @@ def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table,
             best_val_loss = val_loss
             best_epoch = epoch
             bad_epochs = 0
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "epoch": epoch,
-                    "val_loss": val_loss,
-                    "model_size": args.model_size,
-                    "run_name": get_run_name(args),
-                    "input_dim": input_dim,
-                    "logic_connections": get_logic_connections(model),
-                    "exclude_channels": args.exclude_channels,
-                    "shuffle_alz_labels": args.shuffle_alz_labels,
-                    "thermometer_bins": args.thermometer_bins,
-                },
-                checkpoint_path,
-            )
+            checkpoint = checkpoint_metadata(args, model, input_shape, preprocessing_name)
+            checkpoint["epoch"] = epoch
+            checkpoint["val_loss"] = val_loss
+            torch.save(checkpoint, checkpoint_path)
         else:
             bad_epochs += 1
 
@@ -314,7 +426,7 @@ def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table,
     pearl_probabilities = predict_probabilities(model, x_pearl, args.batch_size, args.device)
 
     test_epoch_predictions = make_epoch_predictions(
-        "ALZ_FTD",
+        args.source_dataset,
         "test",
         fold["fold"],
         args.seed,
@@ -324,7 +436,7 @@ def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table,
         alz_table,
     )
     pearl_epoch_predictions = make_epoch_predictions(
-        "PEARL",
+        args.target_dataset,
         "transfer",
         fold["fold"],
         args.seed,
@@ -341,10 +453,18 @@ def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table,
     metrics["fold"] = fold["fold"]
     metrics["best_epoch"] = best_epoch
     metrics["best_val_loss"] = best_val_loss
+    metrics["model_kind"] = args.model_kind
+    metrics["parameter_count"] = parameter_count
     metrics["input_dim"] = input_dim
+    metrics["preprocessing"] = preprocessing_name
     metrics["exclude_channels"] = args.exclude_channels
+    metrics["feature_kind"] = args.feature_kind
     metrics["shuffle_alz_labels"] = args.shuffle_alz_labels
 
+    if args.feature_kind == "hfd":
+        metrics["hfd_name"] = args.hfd_name
+
+    metrics["clinical_task"] = args.clinical_task
     test_epoch_predictions.to_csv(fold_dir / "alz_test_epoch_predictions.csv", index=False)
     test_subject_predictions.to_csv(fold_dir / "alz_test_subject_predictions.csv", index=False)
     pearl_epoch_predictions.to_csv(fold_dir / "pearl_epoch_predictions.csv", index=False)
@@ -386,10 +506,17 @@ def run_training(args):
     run_dir.mkdir(parents=True, exist_ok=True)
 
     exclude_channels = parse_exclude_channels(args.exclude_channels)
-    alz_subjects, alz_table = load_alz_c_vs_a_bandpower_dataset(
+    alz_subjects, alz_table = load_source_dataset(
+        dataset_name=args.source_dataset,
+        clinical_task=args.clinical_task,
+        feature_kind=args.feature_kind,
+        hfd_name=args.hfd_name,
         exclude_channels=exclude_channels,
     )
-    pearl_subjects, pearl_table = load_pearl_bandpower_dataset(
+    pearl_subjects, pearl_table = load_pearl_dataset(
+        dataset_name=args.target_dataset,
+        feature_kind=args.feature_kind,
+        hfd_name=args.hfd_name,
         exclude_channels=exclude_channels,
     )
 
@@ -400,16 +527,7 @@ def run_training(args):
             seed=args.seed,
         )
 
-    run_config = {
-        "model_size": args.model_size,
-        "output_name": get_run_name(args),
-        "seed": args.seed,
-        "exclude_channels": exclude_channels,
-        "shuffle_alz_labels": args.shuffle_alz_labels,
-        "epochs": args.epochs,
-        "patience": args.patience,
-        "thermometer_bins": args.thermometer_bins,
-    }
+    run_config = make_run_config(args, exclude_channels)
     with open(run_dir / "run_config.json", "w") as file:
         json.dump(run_config, file, indent=2)
 
@@ -448,28 +566,48 @@ def run_training(args):
     pearl_ensemble.to_csv(run_dir / "pearl_subject_predictions_ensemble.csv", index=False)
 
     print("\nSaved fold outputs to {}".format(run_dir))
+    print("Model kind: {}".format(args.model_kind))
+    print("Source dataset: {}".format(args.source_dataset))
+    print("Target dataset: {}".format(args.target_dataset))
+    print("Clinical task: {}".format(args.clinical_task))
+    print("Feature kind: {}".format(args.feature_kind))
+    if args.feature_kind == "hfd":
+        print("HFD feature set: {}".format(args.hfd_name))
     print("Excluded channels: {}".format(args.exclude_channels or "none"))
     print("Shuffled ALZ_FTD labels: {}".format(args.shuffle_alz_labels))
-    print(metrics_table[["fold", "balanced_accuracy", "auroc", "best_epoch", "best_val_loss"]])
+    print(metrics_table[["fold", "balanced_accuracy", "auroc", "best_epoch", "best_val_loss", "parameter_count"]])
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model-kind", default="difflogic", choices=["difflogic"] + BASELINE_MODEL_KINDS)
     parser.add_argument("--model-size", default="small", choices=["small", "medium", "large"])
     parser.add_argument("--output-name", default=None)
+    parser.add_argument("--source-dataset", default="ALZ_FTD")
+    parser.add_argument("--target-dataset", default="PEARL")
+    parser.add_argument("--clinical-task", default="cn_vs_ad", choices=["cn_vs_ad", "cn_vs_ftd"])
+    parser.add_argument("--feature-kind", default="psd", choices=["psd", "hfd"])
+    parser.add_argument("--hfd-name", default="kmax_16")
     parser.add_argument("--exclude-channels", default="")
     parser.add_argument("--shuffle-alz-labels", action="store_true")
     parser.add_argument("--folds", default="all")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--patience", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--lr", type=float, default=0.01)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument("--target-parameters", type=int, default=250_000)
     parser.add_argument("--tau", type=float, default=30.0)
     parser.add_argument("--thermometer-bins", type=int, default=15)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--max-train-batches", type=int, default=None)
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.lr is None:
+        args.lr = 0.01 if args.model_kind == "difflogic" else 0.001
+
+    return args
 
 
 if __name__ == "__main__":
