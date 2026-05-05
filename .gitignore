@@ -2,6 +2,7 @@
 datasets/
 outputs/
 logs/
+figures/
 
 # Python cache and local notebook state
 __pycache__/
@@ -24,3 +25,6 @@ venv/
 /notes
 /backup
 /AGENTS.md
+/test.ipynb
+/src/*.png
+/src/*.pdf
