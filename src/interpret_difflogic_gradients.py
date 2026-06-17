@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from baseline_models import make_difflogic_medium_model
 from difflogic_model import make_difflogic_model, set_logic_connections
 from train_helpers import (
     BANDS,
@@ -43,7 +44,15 @@ def load_encoder(path):
     }
 
 
-def load_model(checkpoint_path, model_size, input_dim, device, logic_mode):
+def load_model(
+    checkpoint_path,
+    model_size,
+    input_dim,
+    device,
+    logic_mode,
+    model_kind="difflogic",
+    target_parameters=250_000,
+):
     checkpoint = torch.load(checkpoint_path, map_location=device)
     if "logic_connections" not in checkpoint:
         raise ValueError(
@@ -52,12 +61,21 @@ def load_model(checkpoint_path, model_size, input_dim, device, logic_mode):
         )
 
     implementation = "python" if logic_mode == "hard" else None
-    model = make_difflogic_model(
-        model_size,
-        input_dim=input_dim,
-        device=device,
-        implementation=implementation,
-    )
+    if model_kind == "difflogic_medium":
+        model = make_difflogic_medium_model(
+            input_shape=(input_dim,),
+            thermometer_bins=1,
+            target_parameters=target_parameters,
+            device=device,
+            implementation=implementation,
+        )
+    else:
+        model = make_difflogic_model(
+            model_size,
+            input_dim=input_dim,
+            device=device,
+            implementation=implementation,
+        )
     set_logic_connections(model, checkpoint["logic_connections"], device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
@@ -213,7 +231,7 @@ def interpret_run(args):
     if args.logic_mode == "hard":
         args.device = "cpu"
 
-    run_dir = OUTPUT_DIR / args.run_name
+    run_dir = args.output_dir / args.run_name
     output_dir = run_dir / "interpretation" / f"{args.logic_mode}_{args.method}"
     selected_seeds = parse_number_list(args.seeds)
     selected_folds = parse_number_list(args.folds)
@@ -246,6 +264,8 @@ def interpret_run(args):
                 input_dim=x_encoded.shape[1],
                 device=args.device,
                 logic_mode=args.logic_mode,
+                model_kind=args.model_kind,
+                target_parameters=args.target_parameters,
             )
             signed_relevance, absolute_relevance = compute_epoch_relevance(
                 model,
@@ -278,7 +298,9 @@ def interpret_run(args):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-name", default="medium")
+    parser.add_argument("--model-kind", default="difflogic", choices=["difflogic", "difflogic_medium"])
     parser.add_argument("--model-size", default="medium", choices=["small", "medium", "large"])
+    parser.add_argument("--target-parameters", type=int, default=250_000)
     parser.add_argument("--exclude-channels", default="")
     parser.add_argument("--method", default="grad_x_input", choices=["grad_x_input", "integrated_gradients"])
     parser.add_argument("--logic-mode", default="soft", choices=["soft", "hard"])
@@ -287,6 +309,7 @@ def parse_args():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seeds", default="")
     parser.add_argument("--folds", default="")
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     return parser.parse_args()
 
 

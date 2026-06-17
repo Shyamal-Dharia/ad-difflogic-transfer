@@ -36,8 +36,8 @@ def permutation_median_test(values_a, values_b, n_permutations, seed):
     return observed, p_two_sided
 
 
-def load_model_relevant_features(top_n):
-    signed = pd.read_csv(INTERPRETATION_DIR / "pearl_signed_relevance_group_contrasts.csv")
+def load_model_relevant_features(top_n, interpretation_dir):
+    signed = pd.read_csv(interpretation_dir / "pearl_signed_relevance_group_contrasts.csv")
     top_apn = signed.sort_values("A+P+_minus_N", ascending=False).head(top_n)
     top_apm = signed.sort_values("A+P+_minus_A+P-", ascending=False).head(top_n)
     features = (
@@ -50,8 +50,8 @@ def load_model_relevant_features(top_n):
     return features
 
 
-def load_focused_psd(features):
-    subject_psd = pd.read_csv(PSD_STATS_DIR / "subject_log_relative_bandpower.csv")
+def load_focused_psd(features, psd_stats_dir):
+    subject_psd = pd.read_csv(psd_stats_dir / "subject_log_relative_bandpower.csv")
     pearl_psd = subject_psd[subject_psd["dataset"].eq("PEARL")].copy()
     focused = pearl_psd.merge(features, on=["channel", "band"], how="inner")
     return focused
@@ -155,26 +155,29 @@ def parse_args():
     parser.add_argument("--top-n", type=int, default=15)
     parser.add_argument("--n-permutations", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--psd-stats-dir", type=Path, default=PSD_STATS_DIR)
+    parser.add_argument("--interpretation-dir", type=Path, default=INTERPRETATION_DIR)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    features = load_model_relevant_features(args.top_n)
-    focused = load_focused_psd(features)
+    features = load_model_relevant_features(args.top_n, args.interpretation_dir)
+    focused = load_focused_psd(features, args.psd_stats_dir)
     summary = summarize_groups(focused)
     tests = run_feature_tests(focused, args.n_permutations, args.seed)
     theta_score = make_composite_theta_score(focused)
 
-    features.to_csv(OUTPUT_DIR / "model_relevant_channel_band_features.csv", index=False)
-    focused.to_csv(OUTPUT_DIR / "focused_psd_subject_values.csv", index=False)
-    summary.to_csv(OUTPUT_DIR / "focused_psd_group_summary.csv", index=False)
-    tests.to_csv(OUTPUT_DIR / "focused_psd_tests.csv", index=False)
-    theta_score.to_csv(OUTPUT_DIR / "focused_theta_subject_score.csv", index=False)
+    features.to_csv(args.output_dir / "model_relevant_channel_band_features.csv", index=False)
+    focused.to_csv(args.output_dir / "focused_psd_subject_values.csv", index=False)
+    summary.to_csv(args.output_dir / "focused_psd_group_summary.csv", index=False)
+    tests.to_csv(args.output_dir / "focused_psd_tests.csv", index=False)
+    theta_score.to_csv(args.output_dir / "focused_theta_subject_score.csv", index=False)
 
-    print(f"Saved focused PSD statistics to {OUTPUT_DIR}")
+    print(f"Saved focused PSD statistics to {args.output_dir}")
     print("\nModel-relevant features")
     print(features.to_string(index=False))
     print("\nTop focused PSD tests")

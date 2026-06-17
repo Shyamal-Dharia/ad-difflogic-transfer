@@ -85,9 +85,9 @@ def save_psd_features(input_path, output_dir):
     np.savez_compressed(output_path, **output)
 
 
-def extract_dataset_psd(dataset_name):
+def extract_dataset_psd(dataset_name, output_root):
     input_dir = PROCESSED_DIR / dataset_name
-    output_dir = OUTPUT_DIR / dataset_name
+    output_dir = output_root / dataset_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for input_path in sorted(input_dir.glob("*.npz")):
@@ -98,6 +98,7 @@ def extract_dataset_psd(dataset_name):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--datasets", nargs="+", default=["ALZ_FTD", "PEARL"])
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     return parser.parse_args()
 
 
@@ -105,7 +106,7 @@ def main():
     args = parse_args()
 
     for dataset_name in args.datasets:
-        extract_dataset_psd(dataset_name)
+        extract_dataset_psd(dataset_name, args.output_dir)
 
 
 if __name__ == "__main__":

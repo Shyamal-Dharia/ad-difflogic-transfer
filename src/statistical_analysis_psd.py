@@ -1,3 +1,4 @@
+import argparse
 from itertools import combinations
 from pathlib import Path
 
@@ -65,10 +66,10 @@ def subject_bandpower_rows(dataset_name, feature_path):
     return rows
 
 
-def make_subject_bandpower_table(dataset_name):
+def make_subject_bandpower_table(dataset_name, feature_dir):
     rows = []
 
-    for feature_path in sorted((FEATURE_DIR / dataset_name).glob("*.npz")):
+    for feature_path in sorted((feature_dir / dataset_name).glob("*.npz")):
         rows.extend(subject_bandpower_rows(dataset_name, feature_path))
 
     return pd.DataFrame(rows)
@@ -170,26 +171,34 @@ def run_pairwise_tests(subject_bandpower):
     return results.sort_values(["p_fdr", "p_uncorrected"])
 
 
-def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--feature-dir", type=Path, default=FEATURE_DIR)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
+    return parser.parse_args()
 
-    alz_ftd = make_subject_bandpower_table("ALZ_FTD")
-    pearl = make_subject_bandpower_table("PEARL")
+
+def main():
+    args = parse_args()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    alz_ftd = make_subject_bandpower_table("ALZ_FTD", args.feature_dir)
+    pearl = make_subject_bandpower_table("PEARL", args.feature_dir)
     subject_bandpower = pd.concat([alz_ftd, pearl], ignore_index=True)
 
     group_summary = summarize_groups(subject_bandpower)
     group_tests = run_group_tests(subject_bandpower)
     pairwise_tests = run_pairwise_tests(subject_bandpower)
 
-    subject_bandpower.to_csv(OUTPUT_DIR / "subject_log_relative_bandpower.csv", index=False)
-    group_summary.to_csv(OUTPUT_DIR / "group_log_relative_bandpower_summary.csv", index=False)
-    group_tests.to_csv(OUTPUT_DIR / "group_kruskal_tests.csv", index=False)
-    pairwise_tests.to_csv(OUTPUT_DIR / "pairwise_mannwhitney_tests.csv", index=False)
+    subject_bandpower.to_csv(args.output_dir / "subject_log_relative_bandpower.csv", index=False)
+    group_summary.to_csv(args.output_dir / "group_log_relative_bandpower_summary.csv", index=False)
+    group_tests.to_csv(args.output_dir / "group_kruskal_tests.csv", index=False)
+    pairwise_tests.to_csv(args.output_dir / "pairwise_mannwhitney_tests.csv", index=False)
 
-    print(f"Saved {OUTPUT_DIR / 'subject_log_relative_bandpower.csv'}")
-    print(f"Saved {OUTPUT_DIR / 'group_log_relative_bandpower_summary.csv'}")
-    print(f"Saved {OUTPUT_DIR / 'group_kruskal_tests.csv'}")
-    print(f"Saved {OUTPUT_DIR / 'pairwise_mannwhitney_tests.csv'}")
+    print(f"Saved {args.output_dir / 'subject_log_relative_bandpower.csv'}")
+    print(f"Saved {args.output_dir / 'group_log_relative_bandpower_summary.csv'}")
+    print(f"Saved {args.output_dir / 'group_kruskal_tests.csv'}")
+    print(f"Saved {args.output_dir / 'pairwise_mannwhitney_tests.csv'}")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import numpy as np
@@ -6,7 +7,21 @@ from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-PSD_FEATURE_DIR = ROOT_DIR / "datasets/features_psd"
+
+
+def path_from_env(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+
+    path = Path(value)
+    if path.is_absolute():
+        return path
+
+    return ROOT_DIR / path
+
+
+PSD_FEATURE_DIR = path_from_env("PSD_FEATURE_DIR", ROOT_DIR / "datasets/features_psd")
 HFD_FEATURE_ROOT = ROOT_DIR / "datasets/features_hfd"
 FOLD_DIR = ROOT_DIR / "datasets/folds"
 

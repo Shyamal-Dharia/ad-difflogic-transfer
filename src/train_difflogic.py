@@ -9,7 +9,7 @@ import torch
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, roc_auc_score
 from torch.utils.data import DataLoader, TensorDataset
 
-from baseline_models import count_trainable_parameters, make_baseline_model
+from baseline_models import count_trainable_parameters, make_baseline_model, make_difflogic_medium_model
 from train_helpers import (
     ROOT_DIR,
     encode_fold_for_difflogic,
@@ -29,6 +29,7 @@ except ModuleNotFoundError:
 
 OUTPUT_DIR = ROOT_DIR / "outputs/difflogic"
 BASELINE_MODEL_KINDS = ["mlp_250k", "conv1d_250k", "transformer_250k"]
+DIFFLOGIC_MODEL_KINDS = ["difflogic", "difflogic_medium"]
 
 
 def set_seed(seed):
@@ -56,10 +57,17 @@ def get_run_name(args):
     if args.output_name is not None:
         return args.output_name
 
+    if args.model_kind == "difflogic_medium":
+        return "difflogic_medium"
+
     if args.model_kind != "difflogic":
         return args.model_kind
 
     return args.model_size
+
+
+def is_difflogic_model_kind(model_kind):
+    return model_kind in DIFFLOGIC_MODEL_KINDS
 
 
 def shuffle_alz_subject_labels(alz_subjects, alz_table, seed):
@@ -229,7 +237,7 @@ def save_scaler(scaler, output_path):
 
 
 def prepare_fold_inputs(args, fold_dir, x_train, x_val, x_test, x_pearl):
-    if args.model_kind == "difflogic":
+    if is_difflogic_model_kind(args.model_kind):
         encoder, x_train, x_val, x_test, x_pearl = encode_fold_for_difflogic(
             x_train,
             x_val,
@@ -265,6 +273,15 @@ def make_model(args, input_shape):
             input_dim=int(np.prod(input_shape)),
         )
 
+    if args.model_kind == "difflogic_medium":
+        return make_difflogic_medium_model(
+            input_shape=input_shape,
+            thermometer_bins=1,
+            target_parameters=args.target_parameters,
+            tau=args.tau,
+            device=args.device,
+        )
+
     return make_baseline_model(
         args.model_kind,
         input_shape=input_shape,
@@ -296,7 +313,7 @@ def checkpoint_metadata(args, model, input_shape, preprocessing_name):
     if args.feature_kind == "hfd":
         metadata["hfd_name"] = args.hfd_name
 
-    if args.model_kind == "difflogic":
+    if is_difflogic_model_kind(args.model_kind):
         metadata["logic_connections"] = get_logic_connections(model)
         metadata["thermometer_bins"] = args.thermometer_bins
 
@@ -336,7 +353,7 @@ def make_run_config(args, exclude_channels):
 
 
 def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table, folds):
-    run_dir = OUTPUT_DIR / get_run_name(args) / "seed_{:03d}".format(args.seed)
+    run_dir = args.output_dir / get_run_name(args) / "seed_{:03d}".format(args.seed)
     fold_dir = run_dir / "fold_{:02d}".format(fold["fold"])
     fold_dir.mkdir(parents=True, exist_ok=True)
 
@@ -502,7 +519,7 @@ def make_pearl_ensemble(pearl_predictions):
 
 def run_training(args):
     set_seed(args.seed)
-    run_dir = OUTPUT_DIR / get_run_name(args) / "seed_{:03d}".format(args.seed)
+    run_dir = args.output_dir / get_run_name(args) / "seed_{:03d}".format(args.seed)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     exclude_channels = parse_exclude_channels(args.exclude_channels)
@@ -580,7 +597,7 @@ def run_training(args):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-kind", default="difflogic", choices=["difflogic"] + BASELINE_MODEL_KINDS)
+    parser.add_argument("--model-kind", default="difflogic", choices=DIFFLOGIC_MODEL_KINDS + BASELINE_MODEL_KINDS)
     parser.add_argument("--model-size", default="small", choices=["small", "medium", "large"])
     parser.add_argument("--output-name", default=None)
     parser.add_argument("--source-dataset", default="ALZ_FTD")
@@ -602,10 +619,11 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--max-train-batches", type=int, default=None)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     args = parser.parse_args()
 
     if args.lr is None:
-        args.lr = 0.01 if args.model_kind == "difflogic" else 0.001
+        args.lr = 0.01 if is_difflogic_model_kind(args.model_kind) else 0.001
 
     return args
 

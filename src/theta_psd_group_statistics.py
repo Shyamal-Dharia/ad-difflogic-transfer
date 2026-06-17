@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -12,8 +13,8 @@ PSD_STATS_DIR = ROOT_DIR / "datasets/statistics_psd"
 OUTPUT_DIR = ROOT_DIR / "outputs/theta_psd_group_statistics"
 
 
-def run_theta_tests():
-    psd = pd.read_csv(PSD_STATS_DIR / "subject_log_relative_bandpower.csv")
+def run_theta_tests(psd_stats_dir):
+    psd = pd.read_csv(psd_stats_dir / "subject_log_relative_bandpower.csv")
     theta = psd[psd["dataset"].eq("PEARL") & psd["band"].eq("theta")].copy()
     rows = []
 
@@ -52,11 +53,19 @@ def run_theta_tests():
     return tests.sort_values(["comparison", "p_uncorrected"])
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--psd-stats-dir", type=Path, default=PSD_STATS_DIR)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
+    return parser.parse_args()
+
+
 def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    tests = run_theta_tests()
-    tests.to_csv(OUTPUT_DIR / "theta_psd_pairwise_tests.csv", index=False)
-    print(f"Saved {OUTPUT_DIR / 'theta_psd_pairwise_tests.csv'}")
+    args = parse_args()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    tests = run_theta_tests(args.psd_stats_dir)
+    tests.to_csv(args.output_dir / "theta_psd_pairwise_tests.csv", index=False)
+    print(f"Saved {args.output_dir / 'theta_psd_pairwise_tests.csv'}")
     print(tests.head(30).to_string(index=False))
 
 

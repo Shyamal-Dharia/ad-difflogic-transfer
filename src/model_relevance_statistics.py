@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -15,8 +16,8 @@ INTERPRETATION_DIR = (
 OUTPUT_DIR = ROOT_DIR / "outputs/model_relevance_statistics"
 
 
-def run_relevance_tests():
-    relevance = pd.read_csv(INTERPRETATION_DIR / "pearl_gradient_relevance_seed_average.csv")
+def run_relevance_tests(interpretation_dir):
+    relevance = pd.read_csv(interpretation_dir / "pearl_gradient_relevance_seed_average.csv")
     rows = []
 
     for (channel, band), feature_data in relevance.groupby(["channel", "band"]):
@@ -54,11 +55,19 @@ def run_relevance_tests():
     return tests.sort_values(["comparison", "p_uncorrected"])
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--interpretation-dir", type=Path, default=INTERPRETATION_DIR)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
+    return parser.parse_args()
+
+
 def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    tests = run_relevance_tests()
-    tests.to_csv(OUTPUT_DIR / "integrated_gradient_relevance_tests.csv", index=False)
-    print(f"Saved {OUTPUT_DIR / 'integrated_gradient_relevance_tests.csv'}")
+    args = parse_args()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    tests = run_relevance_tests(args.interpretation_dir)
+    tests.to_csv(args.output_dir / "integrated_gradient_relevance_tests.csv", index=False)
+    print(f"Saved {args.output_dir / 'integrated_gradient_relevance_tests.csv'}")
     print(tests.head(30).to_string(index=False))
 
 
