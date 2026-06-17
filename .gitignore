@@ -2,7 +2,10 @@
 datasets/
 outputs/
 logs/
-figures/
+/figures/*
+!/figures/source_target_integrated_gradient_contrasts_relative_by_contrast_nearest_p010.png
+!/figures/45hz_benchmark_250k/
+!/figures/45hz_benchmark_250k/source_target_integrated_gradient_contrasts_relative_by_contrast_nearest_p010.png
 
 # Python cache and local notebook state
 __pycache__/
@@ -13,7 +16,7 @@ __pycache__/
 .env
 .venv/
 venv/
-
+PROJECT_DETAILS.md
 # Model checkpoints and generated arrays
 *.pt
 *.pth
