@@ -1,12 +1,12 @@
-# AD Diff-Logic Transfer
+# Cross-Cohort Transfer of Clinical Alzheimer's EEG Signatures to Preclinical APOE-ε4 and PICALM rs3851179 Risk Carriers Using Differentiable Logic Gate Networks
 
-Zero-shot transfer of an EEG Alzheimer's disease (AD) classifier to a genetic-risk cohort,
-using Differentiable Logic Gate Networks (Diff-Logic).
+Code and analysis pipeline for the paper above.
 
 A Diff-Logic model is trained on clinical resting-state EEG to separate AD from cognitively
 normal (CN) participants, then applied **without retraining** to the PEARL cohort. The model
-output is treated as an *AD-like EEG signature score* and compared across amyloid/genetic-risk
-groups (N, A+P-, A+P+). Scores are research outputs and are **not** clinical diagnoses.
+output is treated as an *AD-like EEG signature score* and compared across the three genetic-risk
+groups: neutral-risk non-carriers (N), APOE-ε4-only carriers (A+P-), and dual APOE-ε4 / PICALM GG
+carriers (A+P+). Scores are research outputs and are **not** clinical diagnoses.
 
 ![Analysis workflow](figures/workflow_v1.png)
 
@@ -207,12 +207,7 @@ Only figures referenced by this README and the manuscript are tracked; everythin
 
 ### Source-to-target relevance
 
-![Source-to-target integrated-gradient contrasts](figures/45hz_benchmark_250k/source_target_integrated_gradient_contrasts_relative_by_contrast_nearest_p010.png)
+![Source-to-target integrated-gradient contrasts](figures/45hz_benchmark_250k/source_target_integrated_gradient_contrasts_ad_model_nearest_p010.png)
 
 Column-wise normalization uses absolute extrema of 0.1215 (clinical AD-CN), 0.0272 (A+P+ vs N),
 and 0.0368 (A+P+ vs A+P-).
-
-## Notes
-
-All evaluation is subject-level to avoid epoch-level leakage. Transfer scores quantify AD-like EEG
-patterns learned from the clinical source cohort; they are not diagnostic predictions.
