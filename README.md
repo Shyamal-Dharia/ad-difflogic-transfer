@@ -202,9 +202,6 @@ PYTHONPATH=src python -m pytest tests/ -q
 
 ## Figures
 
-Only figures referenced by this README and the manuscript are tracked; everything else written to
-`figures/` is git-ignored.
-
 ### Source-to-target relevance
 
 ![Source-to-target integrated-gradient contrasts](figures/45hz_benchmark_250k/source_target_integrated_gradient_contrasts_ad_model_nearest_p010.png)
