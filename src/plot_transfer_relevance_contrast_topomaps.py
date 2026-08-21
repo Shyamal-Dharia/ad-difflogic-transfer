@@ -22,7 +22,7 @@ from train_helpers import (
     BANDS,
     ROOT_DIR,
     apply_thermometer_encoder,
-    load_alz_c_vs_a_dataset,
+    load_alz_dataset,
     make_subject_stratified_folds,
     stack_subjects,
 )
@@ -63,9 +63,9 @@ BAND_LABELS = {
     "gamma": "Gamma",
 }
 CONTRASTS = [
-    ("clinical_A_minus_C", "Clinical\nAD - CN"),
-    ("pearl_A+P+_minus_N", "Genetic-Risk\nA+P+ - N"),
-    ("pearl_A+P+_minus_A+P-", "Genetic-Risk\nA+P+ - A+P-"),
+    ("clinical_A_minus_C", "Clinical\nAD model\nAD - CN"),
+    ("pearl_A+P+_minus_N", "PEARL\nAD model\nA+P+ - N"),
+    ("pearl_A+P+_minus_A+P-", "PEARL\nAD model\nA+P+ - A+P-"),
 ]
 
 COLUMN_TITLE_FONTSIZE = 13
@@ -79,6 +79,8 @@ OUTPUT_DIR = ROOT_DIR / "outputs/model_relevance_statistics"
 FIGURES_DIR = ROOT_DIR / "figures"
 CLINICAL_RELEVANCE_DIR = OUTPUT_DIR / "clinical_integrated_gradients"
 PEARL_TESTS_PATH = OUTPUT_DIR / "integrated_gradient_relevance_tests.csv"
+COMBINED_RUN_DIR = None
+COMBINED_CLINICAL_RELEVANCE_DIR = None
 
 
 def make_info():
@@ -220,11 +222,17 @@ def run_pairwise_tests(seed_average, group_a, group_b, comparison):
     return tests.sort_values("p_uncorrected")
 
 
-def compute_clinical_relevance():
-    clinical_all_path = CLINICAL_RELEVANCE_DIR / "clinical_gradient_relevance_all_models.csv"
-    clinical_seed_average_path = CLINICAL_RELEVANCE_DIR / "clinical_gradient_relevance_seed_average.csv"
-    clinical_group_summary_path = CLINICAL_RELEVANCE_DIR / "clinical_gradient_relevance_group_summary.csv"
-    clinical_tests_path = CLINICAL_RELEVANCE_DIR / "clinical_integrated_gradient_relevance_tests.csv"
+def compute_clinical_relevance(
+    run_dir,
+    relevance_dir,
+    clinical_task,
+    positive_group,
+    comparison,
+):
+    clinical_all_path = relevance_dir / "clinical_gradient_relevance_all_models.csv"
+    clinical_seed_average_path = relevance_dir / "clinical_gradient_relevance_seed_average.csv"
+    clinical_group_summary_path = relevance_dir / "clinical_gradient_relevance_group_summary.csv"
+    clinical_tests_path = relevance_dir / "clinical_integrated_gradient_relevance_tests.csv"
 
     if clinical_group_summary_path.exists() and clinical_tests_path.exists():
         return (
@@ -232,15 +240,19 @@ def compute_clinical_relevance():
             pd.read_csv(clinical_tests_path),
         )
 
-    CLINICAL_RELEVANCE_DIR.mkdir(parents=True, exist_ok=True)
+    relevance_dir.mkdir(parents=True, exist_ok=True)
     device = resolve_device("cuda")
-    alz_subjects, alz_table = load_alz_c_vs_a_dataset(feature_kind="psd", exclude_channels=[])
+    alz_subjects, alz_table = load_alz_dataset(
+        clinical_task=clinical_task,
+        feature_kind="psd",
+        exclude_channels=[],
+    )
     channel_names = alz_subjects[0]["channel_names"]
     n_channels = alz_subjects[0]["n_channels"]
     n_bands = alz_subjects[0]["n_bands"]
     tables = []
 
-    for seed_dir in sorted(RUN_DIR.glob("seed_*")):
+    for seed_dir in sorted(run_dir.glob("seed_*")):
         seed = int(seed_dir.name.split("_")[1])
         folds = make_subject_stratified_folds(alz_table, random_state=seed)
 
@@ -278,15 +290,19 @@ def compute_clinical_relevance():
                     fold_index,
                 )
             )
-            print(f"computed clinical relevance seed {seed} fold {fold_index}")
+            print(f"computed {clinical_task} relevance seed {seed} fold {fold_index}")
 
     subject_relevance = pd.concat(tables, ignore_index=True)
+    if clinical_task == "cn_vs_ad_ftd":
+        subject_relevance["group"] = subject_relevance["group"].replace(
+            {"A": positive_group, "F": positive_group}
+        )
     seed_average, group_summary = summarize_relevance(subject_relevance)
     clinical_tests = run_pairwise_tests(
         seed_average,
-        group_a="A",
+        group_a=positive_group,
         group_b="C",
-        comparison="clinical_A_vs_C",
+        comparison=comparison,
     )
 
     subject_relevance.to_csv(clinical_all_path, index=False)
@@ -297,14 +313,14 @@ def compute_clinical_relevance():
     return group_summary, clinical_tests
 
 
-def make_clinical_contrast(clinical_group_summary):
+def make_clinical_contrast(clinical_group_summary, positive_group, contrast):
     pivot = clinical_group_summary.pivot(
         index=["channel", "band"],
         columns="group",
         values=VALUE_COLUMN,
     ).reset_index()
-    pivot["contrast"] = "clinical_A_minus_C"
-    pivot["value"] = pivot["A"] - pivot["C"]
+    pivot["contrast"] = contrast
+    pivot["value"] = pivot[positive_group] - pivot["C"]
     return pivot[["channel", "band", "contrast", "value"]]
 
 
@@ -338,7 +354,7 @@ def make_pearl_contrasts():
     return pd.DataFrame(rows)
 
 
-def make_significant_channels(clinical_tests):
+def make_significant_channels(clinical_tests, combined_clinical_tests=None):
     pearl_tests = pd.read_csv(PEARL_TESTS_PATH)
     mapping = {
         "A+P+_vs_N": "pearl_A+P+_minus_N",
@@ -350,9 +366,18 @@ def make_significant_channels(clinical_tests):
     clinical_tests = clinical_tests.copy()
     clinical_tests["contrast"] = "clinical_A_minus_C"
 
+    clinical_tables = [clinical_tests]
+    if combined_clinical_tests is not None:
+        combined_clinical_tests = combined_clinical_tests.copy()
+        combined_clinical_tests["contrast"] = "clinical_AD+FTD_minus_C"
+        clinical_tables.append(combined_clinical_tests)
+
     tests = pd.concat(
         [
-            clinical_tests[["channel", "band", "contrast", "p_uncorrected"]],
+            *[
+                table[["channel", "band", "contrast", "p_uncorrected"]]
+                for table in clinical_tables
+            ],
             pearl_tests[["channel", "band", "contrast", "p_uncorrected"]],
         ],
         ignore_index=True,
@@ -443,14 +468,10 @@ def save_figure(fig, output_prefix):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     png_path = OUTPUT_DIR / f"{output_prefix}.png"
-    pdf_path = OUTPUT_DIR / f"{output_prefix}.pdf"
     fig.savefig(png_path, dpi=600, bbox_inches="tight")
-    fig.savefig(pdf_path, bbox_inches="tight")
     fig.savefig(FIGURES_DIR / f"{output_prefix}.png", dpi=600, bbox_inches="tight")
-    fig.savefig(FIGURES_DIR / f"{output_prefix}.pdf", bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {png_path}")
-    print(f"Saved {pdf_path}")
 
 
 def make_overlap_table(contrast_table, significant_channels):
@@ -460,7 +481,7 @@ def make_overlap_table(contrast_table, significant_channels):
         columns={"p_uncorrected": "clinical_p_uncorrected"}
     )
     pearl_hits = significant_channels[
-        significant_channels["contrast"].ne("clinical_A_minus_C")
+        significant_channels["contrast"].str.startswith("pearl_")
     ][["channel", "band", "contrast", "p_uncorrected"]].rename(
         columns={"p_uncorrected": "pearl_p_uncorrected"}
     )
@@ -475,7 +496,7 @@ def make_overlap_table(contrast_table, significant_channels):
         how="left",
     )
     overlap = overlap.merge(
-        values[values["contrast"].ne("clinical_A_minus_C")][
+        values[values["contrast"].str.startswith("pearl_")][
             ["channel", "band", "contrast", "contrast_value"]
         ].rename(columns={"contrast_value": "pearl_contrast_value"}),
         on=["channel", "band", "contrast"],
@@ -501,7 +522,7 @@ def plot_combined_contrasts(
     fig, axes = plt.subplots(
         len(BAND_ORDER),
         len(CONTRASTS),
-        figsize=(6.9, 9.2),
+        figsize=(2.3 * len(CONTRASTS), 9.2),
         constrained_layout=True,
     )
 
@@ -556,7 +577,12 @@ def plot_band_contrasts(
         max_abs = contrast_table[contrast_table["band"].eq(band)]["value"].abs().max()
     else:
         max_abs = fixed_max_abs
-    fig, axes = plt.subplots(1, len(CONTRASTS), figsize=(6.9, 2.45), constrained_layout=True)
+    fig, axes = plt.subplots(
+        1,
+        len(CONTRASTS),
+        figsize=(2.3 * len(CONTRASTS), 2.45),
+        constrained_layout=True,
+    )
 
     image = None
     for axis, (contrast, title) in zip(axes, CONTRASTS):
@@ -590,6 +616,8 @@ def parse_args():
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     parser.add_argument("--figures-dir", type=Path, default=FIGURES_DIR)
     parser.add_argument("--pearl-tests-path", type=Path)
+    parser.add_argument("--combined-run-dir", type=Path)
+    parser.add_argument("--combined-clinical-relevance-dir", type=Path)
     return parser.parse_args()
 
 
@@ -597,6 +625,7 @@ def configure_paths(args):
     global RUN_NAME, MODEL_KIND, MODEL_SIZE, TARGET_PARAMETERS
     global RUN_DIR, PEARL_INTERPRETATION_DIR, OUTPUT_DIR, FIGURES_DIR
     global CLINICAL_RELEVANCE_DIR, PEARL_TESTS_PATH
+    global COMBINED_RUN_DIR, COMBINED_CLINICAL_RELEVANCE_DIR
 
     RUN_NAME = args.run_name
     MODEL_KIND = args.model_kind
@@ -616,19 +645,61 @@ def configure_paths(args):
         if args.pearl_tests_path is not None
         else OUTPUT_DIR / "integrated_gradient_relevance_tests.csv"
     )
+    COMBINED_RUN_DIR = args.combined_run_dir
+    COMBINED_CLINICAL_RELEVANCE_DIR = (
+        args.combined_clinical_relevance_dir
+        if args.combined_clinical_relevance_dir is not None
+        else OUTPUT_DIR / "clinical_integrated_gradients_ad_ftd"
+    )
 
 
 def main():
+    global CONTRASTS
     configure_paths(parse_args())
-    clinical_group_summary, clinical_tests = compute_clinical_relevance()
-    contrast_table = pd.concat(
-        [
-            make_clinical_contrast(clinical_group_summary),
-            make_pearl_contrasts(),
-        ],
-        ignore_index=True,
+    clinical_group_summary, clinical_tests = compute_clinical_relevance(
+        RUN_DIR,
+        CLINICAL_RELEVANCE_DIR,
+        clinical_task="cn_vs_ad",
+        positive_group="A",
+        comparison="clinical_A_vs_C",
     )
-    significant_channels = make_significant_channels(clinical_tests)
+    contrast_tables = [
+        make_clinical_contrast(
+            clinical_group_summary,
+            positive_group="A",
+            contrast="clinical_A_minus_C",
+        )
+    ]
+    combined_clinical_tests = None
+
+    if COMBINED_RUN_DIR is not None:
+        combined_summary, combined_clinical_tests = compute_clinical_relevance(
+            COMBINED_RUN_DIR,
+            COMBINED_CLINICAL_RELEVANCE_DIR,
+            clinical_task="cn_vs_ad_ftd",
+            positive_group="AD+FTD",
+            comparison="clinical_AD+FTD_vs_C",
+        )
+        contrast_tables.append(
+            make_clinical_contrast(
+                combined_summary,
+                positive_group="AD+FTD",
+                contrast="clinical_AD+FTD_minus_C",
+            )
+        )
+        CONTRASTS = [
+            ("clinical_A_minus_C", "Clinical\nAD model\nAD - CN"),
+            ("clinical_AD+FTD_minus_C", "Clinical\nAD+FTD model\nAD+FTD - CN"),
+            ("pearl_A+P+_minus_N", "PEARL\nAD model\nA+P+ - N"),
+            ("pearl_A+P+_minus_A+P-", "PEARL\nAD model\nA+P+ - A+P-"),
+        ]
+
+    contrast_tables.append(make_pearl_contrasts())
+    contrast_table = pd.concat(contrast_tables, ignore_index=True)
+    significant_channels = make_significant_channels(
+        clinical_tests,
+        combined_clinical_tests,
+    )
 
     contrast_table.to_csv(OUTPUT_DIR / "source_target_integrated_gradient_contrasts.csv", index=False)
     significant_channels.to_csv(

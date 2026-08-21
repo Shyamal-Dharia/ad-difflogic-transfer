@@ -7,6 +7,7 @@ import pandas as pd
 
 ALZ_FTD_DIR = Path("datasets/ALZ_FTD")
 PEARL_DIR = Path("datasets/PEARL")
+DS007427_DIR = Path("datasets/ds007427")
 OUTPUT_DIR = Path("datasets/processed")
 
 COMMON_CHANNELS = [
@@ -39,6 +40,12 @@ PEARL_GROUP_LABELS = {
     "A+P+": 2,
 }
 
+DS007427_GROUP_LABELS = {
+    "CTR": 0,
+    "G1": 1,
+    "G2": 0,
+}
+
 SFREQ = 250
 LOW_FREQ = 1.0
 HIGH_FREQ = 45.0
@@ -49,6 +56,14 @@ EPOCH_REJECT_VOLTS = 150e-6
 
 def preprocess_raw(raw):
     raw = raw.copy()
+    common_channel_names = {name.lower(): name for name in COMMON_CHANNELS}
+    raw.rename_channels(
+        {
+            name: common_channel_names[name.lower()]
+            for name in raw.ch_names
+            if name.lower() in common_channel_names
+        }
+    )
     raw.pick(COMMON_CHANNELS)
     montage = mne.channels.make_standard_montage("standard_1020")
     raw.set_montage(montage, on_missing="raise")
@@ -239,9 +254,67 @@ def preprocess_pearl():
         save_pearl_subject(row, output_dir, typical_eyes_closed_seconds)
 
 
+def ds007427_group(participant_id):
+    for group in DS007427_GROUP_LABELS:
+        if participant_id.startswith(f"sub-{group}"):
+            return group
+    raise ValueError(f"Unknown DS007427 participant group: {participant_id}")
+
+
+def save_ds007427_subject(row, eeg_path, output_dir):
+    participant_id = row["participant_id"]
+    group = ds007427_group(participant_id)
+
+    print(f"Preprocessing DS007427 {participant_id}")
+    raw = mne.io.read_raw_brainvision(eeg_path, preload=True, verbose="ERROR")
+    raw = preprocess_raw(raw)
+    data, epoch_keep_mask, epoch_peak_to_peak = make_clean_epochs(raw)
+
+    output_path = output_dir / f"{participant_id}_task-CE_preprocessed.npz"
+    np.savez_compressed(
+        output_path,
+        x=data,
+        participant_id=participant_id,
+        age=np.float64(row["age"]),
+        sex=np.str_(row["sex"]),
+        group=group,
+        label=np.int64(DS007427_GROUP_LABELS[group]),
+        channel_names=np.array(COMMON_CHANNELS),
+        sfreq=np.float64(SFREQ),
+        epoch_seconds=np.float64(EPOCH_SECONDS),
+        low_freq=np.float64(LOW_FREQ),
+        high_freq=np.float64(HIGH_FREQ),
+        line_freq=np.float64(LINE_FREQ),
+        average_reference_channels=np.array(COMMON_CHANNELS),
+        epoch_keep_mask=epoch_keep_mask,
+        epoch_peak_to_peak=epoch_peak_to_peak,
+    )
+
+
+def preprocess_ds007427():
+    participants = pd.read_csv(
+        DS007427_DIR / "participants.tsv",
+        sep="\t",
+        keep_default_na=False,
+    ).set_index("participant_id")
+    participants["age"] = pd.to_numeric(participants["age"], errors="coerce")
+    eeg_paths = sorted(
+        DS007427_DIR.glob("sub-*/ses-V0/eeg/*_task-CE_eeg.vhdr")
+    )
+    output_dir = OUTPUT_DIR / "DS007427"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for eeg_path in eeg_paths:
+        participant_id = eeg_path.parents[2].name
+        row = participants.loc[participant_id].copy()
+        row["participant_id"] = participant_id
+        save_ds007427_subject(row, eeg_path, output_dir)
+
+
 def main():
     preprocess_alz_ftd()
     preprocess_pearl()
+    preprocess_ds007427()
 
 
 if __name__ == "__main__":

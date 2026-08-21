@@ -48,10 +48,30 @@ def make_psd_features(psd):
     return log_psd, relative_psd, log_relative_psd
 
 
-def save_psd_features(input_path, output_dir):
+def select_and_rereference(x, channel_names, selected_channels):
+    if selected_channels is None:
+        return x, channel_names
+
+    missing_channels = [
+        channel for channel in selected_channels if channel not in channel_names
+    ]
+    if missing_channels:
+        raise ValueError(f"Missing selected channels: {missing_channels}")
+
+    channel_indices = [channel_names.index(channel) for channel in selected_channels]
+    selected_x = x[:, channel_indices, :]
+    selected_x = selected_x - selected_x.mean(axis=1, keepdims=True)
+    return selected_x.astype(np.float32), selected_channels
+
+
+def save_psd_features(input_path, output_dir, selected_channels=None):
     data = np.load(input_path, allow_pickle=True)
     sfreq = float(scalar(data["sfreq"]))
-    psd, freqs = compute_welch_psd(data["x"], sfreq)
+    source_channel_names = data["channel_names"].astype(str).tolist()
+    x, channel_names = select_and_rereference(
+        data["x"], source_channel_names, selected_channels
+    )
+    psd, freqs = compute_welch_psd(x, sfreq)
     log_psd, relative_psd, log_relative_psd = make_psd_features(psd)
 
     output_path = output_dir / input_path.name.replace("_preprocessed.npz", "_psd.npz")
@@ -66,7 +86,9 @@ def save_psd_features(input_path, output_dir):
         "group": data["group"],
         "label": data["label"],
         "age": data["age"],
-        "channel_names": data["channel_names"],
+        "channel_names": np.array(channel_names),
+        "average_reference_channels": np.array(channel_names),
+        "source_average_reference_channels": data["average_reference_channels"],
         "sfreq": data["sfreq"],
         "feature_type": "welch_log_relative_psd",
         "x_description": "log10(relative Welch PSD); relative PSD is normalized by total 1-45 Hz power per epoch and channel",
@@ -85,20 +107,21 @@ def save_psd_features(input_path, output_dir):
     np.savez_compressed(output_path, **output)
 
 
-def extract_dataset_psd(dataset_name, output_root):
+def extract_dataset_psd(dataset_name, output_root, selected_channels=None):
     input_dir = PROCESSED_DIR / dataset_name
     output_dir = output_root / dataset_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for input_path in sorted(input_dir.glob("*.npz")):
         print(f"Extracting PSD {dataset_name} {input_path.name}")
-        save_psd_features(input_path, output_dir)
+        save_psd_features(input_path, output_dir, selected_channels)
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--datasets", nargs="+", default=["ALZ_FTD", "PEARL"])
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
+    parser.add_argument("--channels", nargs="+", default=None)
     return parser.parse_args()
 
 
@@ -106,7 +129,7 @@ def main():
     args = parse_args()
 
     for dataset_name in args.datasets:
-        extract_dataset_psd(dataset_name, args.output_dir)
+        extract_dataset_psd(dataset_name, args.output_dir, args.channels)
 
 
 if __name__ == "__main__":

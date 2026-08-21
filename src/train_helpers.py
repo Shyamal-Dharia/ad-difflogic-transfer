@@ -81,6 +81,15 @@ def alz_c_vs_f_label(group):
     return None, None
 
 
+def alz_c_vs_ad_ftd_label(group):
+    if group == "C":
+        return 0, "C"
+    if group in {"A", "F"}:
+        return 1, group
+
+    return None, None
+
+
 def pearl_group_label(group):
     if group == "N":
         return 0, "N"
@@ -88,6 +97,15 @@ def pearl_group_label(group):
         return 1, "A+P-"
     if group == "A+P+":
         return 2, "A+P+"
+
+    return None, None
+
+
+def ds007427_group_label(group):
+    if group in {"CTR", "G2"}:
+        return 0, group
+    if group == "G1":
+        return 1, "G1"
 
     return None, None
 
@@ -123,7 +141,7 @@ def make_subject(
         "x": x,
         "label": label,
         "group": selected_group,
-        "age": int(scalar(data["age"])),
+        "age": float(scalar(data["age"])),
         "channel_names": channel_names,
         "n_epochs": x.shape[0],
         "n_channels": x.shape[1],
@@ -203,6 +221,14 @@ def load_alz_c_vs_f_bandpower_dataset(exclude_channels=None):
     return load_bandpower_dataset(
         "ALZ_FTD",
         alz_c_vs_f_label,
+        exclude_channels=exclude_channels,
+    )
+
+
+def load_alz_c_vs_ad_ftd_bandpower_dataset(exclude_channels=None):
+    return load_bandpower_dataset(
+        "ALZ_FTD",
+        alz_c_vs_ad_ftd_label,
         exclude_channels=exclude_channels,
     )
 
@@ -301,6 +327,15 @@ def load_alz_c_vs_f_hfd_dataset(hfd_name="kmax_16", exclude_channels=None):
     )
 
 
+def load_alz_c_vs_ad_ftd_hfd_dataset(hfd_name="kmax_16", exclude_channels=None):
+    return load_hfd_dataset(
+        "ALZ_FTD",
+        alz_c_vs_ad_ftd_label,
+        hfd_name=hfd_name,
+        exclude_channels=exclude_channels,
+    )
+
+
 def load_pearl_hfd_dataset(dataset_name="PEARL", hfd_name="kmax_16", exclude_channels=None):
     return load_hfd_dataset(
         dataset_name,
@@ -330,6 +365,16 @@ def load_alz_c_vs_f_dataset(feature_kind="psd", hfd_name="kmax_16", exclude_chan
     return load_alz_c_vs_f_bandpower_dataset(exclude_channels=exclude_channels)
 
 
+def load_alz_c_vs_ad_ftd_dataset(feature_kind="psd", hfd_name="kmax_16", exclude_channels=None):
+    if feature_kind == "hfd":
+        return load_alz_c_vs_ad_ftd_hfd_dataset(
+            hfd_name=hfd_name,
+            exclude_channels=exclude_channels,
+        )
+
+    return load_alz_c_vs_ad_ftd_bandpower_dataset(exclude_channels=exclude_channels)
+
+
 def load_alz_dataset(
     clinical_task="cn_vs_ad",
     feature_kind="psd",
@@ -338,6 +383,12 @@ def load_alz_dataset(
 ):
     if clinical_task == "cn_vs_ftd":
         return load_alz_c_vs_f_dataset(
+            feature_kind=feature_kind,
+            hfd_name=hfd_name,
+            exclude_channels=exclude_channels,
+        )
+    if clinical_task == "cn_vs_ad_ftd":
+        return load_alz_c_vs_ad_ftd_dataset(
             feature_kind=feature_kind,
             hfd_name=hfd_name,
             exclude_channels=exclude_channels,
@@ -387,6 +438,34 @@ def load_pearl_dataset(
     return load_pearl_bandpower_dataset(dataset_name=dataset_name, exclude_channels=exclude_channels)
 
 
+def load_target_dataset(
+    dataset_name,
+    feature_kind="psd",
+    hfd_name="kmax_16",
+    exclude_channels=None,
+):
+    label_functions = {
+        "PEARL": pearl_group_label,
+        "DS007427": ds007427_group_label,
+    }
+    if dataset_name not in label_functions:
+        raise ValueError(f"Unsupported transfer dataset: {dataset_name}")
+
+    if feature_kind == "hfd":
+        return load_hfd_dataset(
+            dataset_name,
+            label_functions[dataset_name],
+            hfd_name=hfd_name,
+            exclude_channels=exclude_channels,
+        )
+
+    return load_bandpower_dataset(
+        dataset_name,
+        label_functions[dataset_name],
+        exclude_channels=exclude_channels,
+    )
+
+
 def stack_subjects(subjects, subject_ids):
     selected_subjects = [
         subject
@@ -409,6 +488,25 @@ def stack_subjects(subjects, subject_ids):
     )
 
     return x, y, epoch_subject_ids
+
+
+def cap_subject_epochs(subjects, max_epochs, random_state):
+    if max_epochs is None:
+        return subjects
+
+    rng = np.random.default_rng(random_state)
+    capped_subjects = []
+    for subject in subjects:
+        capped_subject = subject.copy()
+        if subject["n_epochs"] > max_epochs:
+            epoch_indices = np.sort(
+                rng.choice(subject["n_epochs"], max_epochs, replace=False)
+            )
+            capped_subject["x"] = subject["x"][epoch_indices]
+            capped_subject["n_epochs"] = max_epochs
+        capped_subjects.append(capped_subject)
+
+    return capped_subjects
 
 
 def fit_minmax_scaler(x_train):

@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -13,14 +14,14 @@ DIFFLOGIC_DIR = ROOT_DIR / "outputs/difflogic"
 OUTPUT_DIR = ROOT_DIR / "outputs/model_comparison_tables"
 
 MODEL_RUNS = [
-    ("DiffLogic", "medium_interpretable"),
+    ("DiffLogic", "large_250k_interpretable"),
     ("MLP 250k", "mlp_250k_psd"),
     ("1-Conv 250k", "conv1d_250k_psd"),
     ("Transformer 250k", "transformer_250k_psd"),
 ]
 
 MODEL_LATEX_LABELS = {
-    "DiffLogic": r"$\textbf{Diff-Logic}_{\textbf{250k}}$",
+    "DiffLogic": r"$\textbf{Diff-Logic}_{\textbf{256k}}$",
     "MLP 250k": r"MLP$_{250\mathrm{k}}$",
     "1-Conv 250k": r"1D-Conv$_{250\mathrm{k}}$",
     "Transformer 250k": r"Transformer$_{250\mathrm{k}}$",
@@ -369,6 +370,28 @@ def write_contrast_latex(contrasts, output_path):
 
 
 def main():
+    global DIFFLOGIC_DIR, OUTPUT_DIR
+
+    parser = argparse.ArgumentParser(
+        description="Build model comparison tables from DiffLogic experiment outputs."
+    )
+    parser.add_argument(
+        "--difflogic-dir",
+        type=Path,
+        default=DIFFLOGIC_DIR,
+        help="Directory containing model run folders.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=OUTPUT_DIR,
+        help="Directory where comparison tables will be written.",
+    )
+    args = parser.parse_args()
+
+    DIFFLOGIC_DIR = args.difflogic_dir
+    OUTPUT_DIR = args.output_dir
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     performance = make_performance_table()
     contrasts = make_transfer_contrast_table()

@@ -2,10 +2,11 @@
 datasets/
 outputs/
 logs/
+
+# Figures: track only the ones referenced by the README/manuscript
 /figures/*
-!/figures/source_target_integrated_gradient_contrasts_relative_by_contrast_nearest_p010.png
+!/figures/workflow_v1.png
 !/figures/45hz_benchmark_250k/
-!/figures/45hz_benchmark_250k/source_target_integrated_gradient_contrasts_relative_by_contrast_nearest_p010.png
 
 # Python cache and local notebook state
 __pycache__/
@@ -16,18 +17,25 @@ __pycache__/
 .env
 .venv/
 venv/
+
+# Manuscript sources and local working notes (kept out of the code repository)
+*.tex
+*.bib
+*.pdf
+CLAUDE.md
+AGENTS.md
 PROJECT_DETAILS.md
+REVISION_README.md
+RESPONSE_TO_REVIEWERS.md
+/notes
+/backup
+/test.ipynb
+
 # Model checkpoints and generated arrays
 *.pt
 *.pth
 *.npy
 *.npz
 *.so
-
-
-/notes
-/backup
-/AGENTS.md
-/test.ipynb
 /src/*.png
 /src/*.pdf

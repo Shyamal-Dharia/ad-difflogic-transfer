@@ -12,9 +12,10 @@ from torch.utils.data import DataLoader, TensorDataset
 from baseline_models import count_trainable_parameters, make_baseline_model, make_difflogic_medium_model
 from train_helpers import (
     ROOT_DIR,
+    cap_subject_epochs,
     encode_fold_for_difflogic,
-    load_pearl_dataset,
     load_source_dataset,
+    load_target_dataset,
     make_subject_stratified_folds,
     scale_fold_features,
     stack_subjects,
@@ -159,7 +160,7 @@ def predict_probabilities(model, x, batch_size, device):
     return np.concatenate(probabilities, axis=0)
 
 
-def make_epoch_predictions(dataset, split, fold, seed, probabilities, y_true, subject_ids, subject_table):
+def make_epoch_predictions(split, fold, seed, probabilities, y_true, subject_ids, subject_table):
     metadata = subject_table.set_index("participant_id")
     rows = []
 
@@ -167,7 +168,7 @@ def make_epoch_predictions(dataset, split, fold, seed, probabilities, y_true, su
         subject = metadata.loc[subject_id]
         rows.append(
             {
-                "dataset": dataset,
+                "dataset": subject["dataset"],
                 "split": split,
                 "seed": seed,
                 "fold": fold,
@@ -303,11 +304,13 @@ def checkpoint_metadata(args, model, input_shape, preprocessing_name):
         "feature_kind": args.feature_kind,
         "clinical_task": args.clinical_task,
         "source_dataset": args.source_dataset,
-        "target_dataset": args.target_dataset,
+        "target_dataset": args.target_datasets[0],
+        "target_datasets": args.target_datasets,
         "shuffle_alz_labels": args.shuffle_alz_labels,
         "preprocessing": preprocessing_name,
         "dropout": args.dropout,
         "target_parameters": args.target_parameters,
+        "tau": args.tau,
     }
 
     if args.feature_kind == "hfd":
@@ -330,20 +333,24 @@ def make_run_config(args, exclude_channels):
         "feature_kind": args.feature_kind,
         "clinical_task": args.clinical_task,
         "source_dataset": args.source_dataset,
-        "target_dataset": args.target_dataset,
+        "target_dataset": args.target_datasets[0],
+        "target_datasets": args.target_datasets,
         "shuffle_alz_labels": args.shuffle_alz_labels,
         "epochs": args.epochs,
         "patience": args.patience,
         "batch_size": args.batch_size,
         "lr": args.lr,
+        "tau": args.tau,
+        "max_source_epochs_per_subject": args.max_source_epochs_per_subject,
     }
 
     if args.feature_kind == "hfd":
         run_config["hfd_name"] = args.hfd_name
 
-    if args.model_kind == "difflogic":
+    if is_difflogic_model_kind(args.model_kind):
         run_config["preprocessing"] = "thermometer"
         run_config["thermometer_bins"] = args.thermometer_bins
+        run_config["target_parameters"] = args.target_parameters
     else:
         run_config["preprocessing"] = "minmax"
         run_config["dropout"] = args.dropout
@@ -352,7 +359,7 @@ def make_run_config(args, exclude_channels):
     return run_config
 
 
-def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table, folds):
+def train_fold(args, fold, alz_subjects, alz_table, target_subjects, target_table):
     run_dir = args.output_dir / get_run_name(args) / "seed_{:03d}".format(args.seed)
     fold_dir = run_dir / "fold_{:02d}".format(fold["fold"])
     fold_dir.mkdir(parents=True, exist_ok=True)
@@ -360,18 +367,18 @@ def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table,
     x_train, y_train, train_subject_ids = stack_subjects(alz_subjects, fold["train_subject_ids"])
     x_val, y_val, val_subject_ids = stack_subjects(alz_subjects, fold["val_subject_ids"])
     x_test, y_test, test_subject_ids = stack_subjects(alz_subjects, fold["test_subject_ids"])
-    x_pearl, y_pearl, pearl_subject_ids = stack_subjects(
-        pearl_subjects,
-        pearl_table["participant_id"].to_numpy(),
+    x_target, y_target, target_subject_ids = stack_subjects(
+        target_subjects,
+        target_table["participant_id"].to_numpy(),
     )
 
-    x_train, x_val, x_test, x_pearl, preprocessing_name = prepare_fold_inputs(
+    x_train, x_val, x_test, x_target, preprocessing_name = prepare_fold_inputs(
         args,
         fold_dir,
         x_train,
         x_val,
         x_test,
-        x_pearl,
+        x_target,
     )
 
     train_loader = make_loader(x_train, y_train, args.batch_size, shuffle=True)
@@ -440,10 +447,9 @@ def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table,
     model.load_state_dict(checkpoint["model_state_dict"])
 
     test_probabilities = predict_probabilities(model, x_test, args.batch_size, args.device)
-    pearl_probabilities = predict_probabilities(model, x_pearl, args.batch_size, args.device)
+    target_probabilities = predict_probabilities(model, x_target, args.batch_size, args.device)
 
     test_epoch_predictions = make_epoch_predictions(
-        args.source_dataset,
         "test",
         fold["fold"],
         args.seed,
@@ -452,19 +458,18 @@ def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table,
         test_subject_ids,
         alz_table,
     )
-    pearl_epoch_predictions = make_epoch_predictions(
-        args.target_dataset,
+    target_epoch_predictions = make_epoch_predictions(
         "transfer",
         fold["fold"],
         args.seed,
-        pearl_probabilities,
-        y_pearl,
-        pearl_subject_ids,
-        pearl_table,
+        target_probabilities,
+        y_target,
+        target_subject_ids,
+        target_table,
     )
 
     test_subject_predictions = make_subject_predictions(test_epoch_predictions)
-    pearl_subject_predictions = make_subject_predictions(pearl_epoch_predictions)
+    target_subject_predictions = make_subject_predictions(target_epoch_predictions)
     metrics = compute_binary_metrics(test_subject_predictions)
     metrics["seed"] = args.seed
     metrics["fold"] = fold["fold"]
@@ -484,8 +489,14 @@ def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table,
     metrics["clinical_task"] = args.clinical_task
     test_epoch_predictions.to_csv(fold_dir / "alz_test_epoch_predictions.csv", index=False)
     test_subject_predictions.to_csv(fold_dir / "alz_test_subject_predictions.csv", index=False)
-    pearl_epoch_predictions.to_csv(fold_dir / "pearl_epoch_predictions.csv", index=False)
-    pearl_subject_predictions.to_csv(fold_dir / "pearl_subject_predictions.csv", index=False)
+    for dataset_name in args.target_datasets:
+        output_name = dataset_name.lower()
+        target_epoch_predictions[
+            target_epoch_predictions["dataset"].eq(dataset_name)
+        ].to_csv(fold_dir / f"{output_name}_epoch_predictions.csv", index=False)
+        target_subject_predictions[
+            target_subject_predictions["dataset"].eq(dataset_name)
+        ].to_csv(fold_dir / f"{output_name}_subject_predictions.csv", index=False)
     pd.DataFrame([metrics]).to_csv(fold_dir / "alz_test_metrics.csv", index=False)
 
     print(
@@ -497,12 +508,12 @@ def train_fold(args, fold, alz_subjects, alz_table, pearl_subjects, pearl_table,
         )
     )
 
-    return metrics, test_subject_predictions, pearl_subject_predictions
+    return metrics, test_subject_predictions, target_subject_predictions
 
 
-def make_pearl_ensemble(pearl_predictions):
+def make_target_ensemble(target_predictions):
     ensemble = (
-        pearl_predictions
+        target_predictions
         .groupby(["participant_id", "group", "true_label"])
         .agg(
             n_folds=("fold", "count"),
@@ -530,12 +541,30 @@ def run_training(args):
         hfd_name=args.hfd_name,
         exclude_channels=exclude_channels,
     )
-    pearl_subjects, pearl_table = load_pearl_dataset(
-        dataset_name=args.target_dataset,
-        feature_kind=args.feature_kind,
-        hfd_name=args.hfd_name,
-        exclude_channels=exclude_channels,
+    alz_subjects = cap_subject_epochs(
+        alz_subjects,
+        args.max_source_epochs_per_subject,
+        args.seed,
     )
+    if args.max_source_epochs_per_subject is not None:
+        capped_epoch_counts = {
+            subject["participant_id"]: subject["n_epochs"]
+            for subject in alz_subjects
+        }
+        alz_table["n_epochs"] = alz_table["participant_id"].map(capped_epoch_counts)
+    target_datasets = [
+        load_target_dataset(
+            dataset_name=dataset_name,
+            feature_kind=args.feature_kind,
+            hfd_name=args.hfd_name,
+            exclude_channels=exclude_channels,
+        )
+        for dataset_name in args.target_datasets
+    ]
+    target_subjects = [subject for subjects, _ in target_datasets for subject in subjects]
+    target_table = pd.concat([table for _, table in target_datasets], ignore_index=True)
+    if target_table["participant_id"].duplicated().any():
+        raise ValueError("Transfer datasets contain duplicate participant IDs")
 
     if args.shuffle_alz_labels:
         alz_subjects, alz_table = shuffle_alz_subject_labels(
@@ -553,39 +582,48 @@ def run_training(args):
 
     all_metrics = []
     all_test_predictions = []
-    all_pearl_predictions = []
+    all_target_predictions = []
 
     for fold in folds:
         if fold["fold"] not in selected_folds:
             continue
 
-        metrics, test_predictions, pearl_predictions = train_fold(
+        metrics, test_predictions, target_predictions = train_fold(
             args,
             fold,
             alz_subjects,
             alz_table,
-            pearl_subjects,
-            pearl_table,
-            folds,
+            target_subjects,
+            target_table,
         )
         all_metrics.append(metrics)
         all_test_predictions.append(test_predictions)
-        all_pearl_predictions.append(pearl_predictions)
+        all_target_predictions.append(target_predictions)
 
     metrics_table = pd.DataFrame(all_metrics)
     test_predictions = pd.concat(all_test_predictions, ignore_index=True)
-    pearl_predictions = pd.concat(all_pearl_predictions, ignore_index=True)
-    pearl_ensemble = make_pearl_ensemble(pearl_predictions)
+    target_predictions = pd.concat(all_target_predictions, ignore_index=True)
 
     metrics_table.to_csv(run_dir / "alz_test_metrics_all_folds.csv", index=False)
     test_predictions.to_csv(run_dir / "alz_test_subject_predictions_all_folds.csv", index=False)
-    pearl_predictions.to_csv(run_dir / "pearl_subject_predictions_all_folds.csv", index=False)
-    pearl_ensemble.to_csv(run_dir / "pearl_subject_predictions_ensemble.csv", index=False)
+    for dataset_name in args.target_datasets:
+        output_name = dataset_name.lower()
+        dataset_predictions = target_predictions[
+            target_predictions["dataset"].eq(dataset_name)
+        ]
+        dataset_predictions.to_csv(
+            run_dir / f"{output_name}_subject_predictions_all_folds.csv",
+            index=False,
+        )
+        make_target_ensemble(dataset_predictions).to_csv(
+            run_dir / f"{output_name}_subject_predictions_ensemble.csv",
+            index=False,
+        )
 
     print("\nSaved fold outputs to {}".format(run_dir))
     print("Model kind: {}".format(args.model_kind))
     print("Source dataset: {}".format(args.source_dataset))
-    print("Target dataset: {}".format(args.target_dataset))
+    print("Target datasets: {}".format(", ".join(args.target_datasets)))
     print("Clinical task: {}".format(args.clinical_task))
     print("Feature kind: {}".format(args.feature_kind))
     if args.feature_kind == "hfd":
@@ -601,8 +639,17 @@ def parse_args():
     parser.add_argument("--model-size", default="small", choices=["small", "medium", "large"])
     parser.add_argument("--output-name", default=None)
     parser.add_argument("--source-dataset", default="ALZ_FTD")
-    parser.add_argument("--target-dataset", default="PEARL")
-    parser.add_argument("--clinical-task", default="cn_vs_ad", choices=["cn_vs_ad", "cn_vs_ftd"])
+    parser.add_argument(
+        "--target-datasets",
+        "--target-dataset",
+        nargs="+",
+        default=["PEARL"],
+    )
+    parser.add_argument(
+        "--clinical-task",
+        default="cn_vs_ad",
+        choices=["cn_vs_ad", "cn_vs_ftd", "cn_vs_ad_ftd"],
+    )
     parser.add_argument("--feature-kind", default="psd", choices=["psd", "hfd"])
     parser.add_argument("--hfd-name", default="kmax_16")
     parser.add_argument("--exclude-channels", default="")
@@ -619,6 +666,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--max-train-batches", type=int, default=None)
+    parser.add_argument("--max-source-epochs-per-subject", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     args = parser.parse_args()
 
